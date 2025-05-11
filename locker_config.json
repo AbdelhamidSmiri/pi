@@ -1,0 +1,29 @@
+{
+    "system_name": "Laundry Locker System",
+    "server_url": "https://api.2sdata.net/api",
+    "server_api_key": "7ea1d812-5308-4d61-bae6-be561caf1e98",
+    "relay_pins": {
+        "1": 17,
+        "2": 27
+    },
+    "unlock_duration": 5,
+    "wash_types": [
+        {
+            "id": 1,
+            "name": "Standard Wash",
+            "price": 5.0
+        },
+        {
+            "id": 2,
+            "name": "Delicate Wash",
+            "price": 7.5
+        },
+        {
+            "id": 3,
+            "name": "Heavy Duty",
+            "price": 10.0
+        }
+    ],
+    "api_port": 5000,
+    "api_host": "0.0.0.0"
+}
