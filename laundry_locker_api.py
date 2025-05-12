@@ -94,6 +94,14 @@ class LockerTransaction:
         self.status = status  # pending, processing, completed
         self.drop_off_time = datetime.now().isoformat()
         self.pickup_time = None
+        
+        # Add estimated completion time based on wash type if available
+        if wash_type and 'estimated_time' in wash_type:
+            drop_off_datetime = datetime.now()
+            minutes_to_add = wash_type['estimated_time']
+            self.estimated_completion_time = (drop_off_datetime + timedelta(minutes=minutes_to_add)).isoformat()
+        else:
+            self.estimated_completion_time = None
 
     def to_dict(self):
         return {
@@ -103,7 +111,8 @@ class LockerTransaction:
             "wash_type": self.wash_type,
             "status": self.status,
             "drop_off_time": self.drop_off_time,
-            "pickup_time": self.pickup_time
+            "pickup_time": self.pickup_time,
+            "estimated_completion_time": self.estimated_completion_time
         }
 
     def complete_transaction(self):
@@ -386,15 +395,28 @@ class RFIDLockerSystem:
             self.card_queue = []
         return True
 
-    def assign_card_to_locker(self, card_id, locker_id, wash_type):
+    def assign_card_to_locker(self, card_id, locker_id, wash_type_id):
         """Assign a card to a locker with selected wash type"""
         # Check if locker is available
         if locker_id not in self.data["available_lockers"]:
             logger.error(f"Locker {locker_id} is not available")
             return False, "Locker not available"
 
+        # Get the full wash type information
+        wash_types = self.get_wash_types()
+        selected_wash_type = None
+        
+        for wt in wash_types:
+            if wt['id'] == wash_type_id:
+                selected_wash_type = wt
+                break
+        
+        if not selected_wash_type:
+            logger.error(f"Wash type {wash_type_id} not found")
+            return False, "Invalid wash type"
+
         # Create new transaction
-        transaction = LockerTransaction(card_id, locker_id, wash_type)
+        transaction = LockerTransaction(card_id, locker_id, selected_wash_type)
         
         # Update active cards
         self.data["active_cards"][card_id] = {
@@ -413,6 +435,8 @@ class RFIDLockerSystem:
         
         # Send update to server
         self.send_to_server("new_transaction", transaction.to_dict())
+        
+        return True, f"Card assigned to locker {locker_id} with {selected_wash_type['name']} service"
         
         return True, f"Card assigned to locker {locker_id} with {wash_type} service"
 
@@ -522,7 +546,46 @@ class RFIDLockerSystem:
         }
 
     def get_wash_types(self):
-        """Get available wash types"""
+        """Get available wash types from server, fall back to local config if server unreachable"""
+        try:
+            # Attempt to fetch wash types from server
+            response = requests.get(
+                f"{self.config['server_url']}/get_wash_types",
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                wash_types = response.json().get("wash_types", [])
+                if wash_types:
+                    logger.info(f"Successfully fetched {len(wash_types)} wash types from server")
+                    
+                    # Transform to match the expected structure if needed
+                    for wash_type in wash_types:
+                        # Ensure it has at least the required fields expected by the UI
+                        if 'id' not in wash_type:
+                            wash_type['id'] = 0
+                        if 'name' not in wash_type:
+                            wash_type['name'] = "Unknown"
+                        if 'price' not in wash_type:
+                            wash_type['price'] = 0.0
+                    
+                    # Cache the wash types in memory for backup
+                    self.server_wash_types = wash_types
+                    return wash_types
+                else:
+                    logger.warning("Server returned empty wash types list, using local config")
+            else:
+                logger.warning(f"Server error when fetching wash types: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Error fetching wash types from server: {e}")
+        
+        # Fall back to server-cached wash types if available
+        if hasattr(self, 'server_wash_types') and self.server_wash_types:
+            logger.info("Using cached server wash types")
+            return self.server_wash_types
+            
+        # Fall back to local config if server unreachable or returned error
+        logger.info("Using local config wash types")
         return self.config["wash_types"]
 
     def get_health(self):
@@ -572,7 +635,18 @@ def get_health():
 def get_wash_types():
     """Get available wash types"""
     global locker_system
-    return jsonify(locker_system.get_wash_types())
+    wash_types = locker_system.get_wash_types()
+    
+    # If this is our local configuration, we might need to adapt it for the UI
+    if not any('description' in wt for wt in wash_types):
+        # Add missing fields for compatibility
+        for wash_type in wash_types:
+            if 'description' not in wash_type:
+                wash_type['description'] = f"{wash_type['name']} service"
+            if 'estimated_time' not in wash_type:
+                wash_type['estimated_time'] = 60  # Default 60 minutes
+    
+    return jsonify(wash_types)
 
 @app.route('/api/read-card', methods=['GET'])
 def read_card():
@@ -608,11 +682,15 @@ def drop_off():
     # Get first available locker
     locker_id = locker_system.data["available_lockers"][0]
     
+    # Get wash type ID from request
+    # If wash_type is an object, extract ID; if it's already an ID, use directly
+    wash_type_id = data["wash_type"]["id"] if isinstance(data["wash_type"], dict) else data["wash_type"]
+    
     # Process assignment
     success, message = locker_system.assign_card_to_locker(
         data["card_id"], 
         locker_id, 
-        data["wash_type"]
+        wash_type_id
     )
     
     if success:
