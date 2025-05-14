@@ -361,10 +361,14 @@ class RFIDLockerSystem:
         """Get the last card read from the queue with improved reliability and multiple read validation"""
         with self.card_read_lock:
             if not self.card_queue:
+                logger.debug("Card queue is empty")
                 return None
             
             # Current time for comparison    
             now = datetime.now()
+            
+            # Debug log the entire queue for troubleshooting
+            rfid_logger.debug(f"Card queue contents: {self.card_queue}")
             
             # First, look for cards with multiple reads (more reliable)
             for i in range(len(self.card_queue) - 1, -1, -1):  # Search backward from most recent
@@ -374,6 +378,7 @@ class RFIDLockerSystem:
                 
                 # If this card was seen multiple times and is recent, prioritize it
                 if card.get("read_count", 1) > 1 and time_diff <= self.config.get('card_validity_window', 30):
+                    rfid_logger.info(f"Returning multi-read card: {card}")
                     return card
             
             # Fall back to most recent card if no multiple-read cards found
@@ -384,6 +389,7 @@ class RFIDLockerSystem:
             validity_window = self.config.get('card_validity_window', 30)
             
             if time_diff <= validity_window:
+                rfid_logger.info(f"Returning most recent card: {card}")
                 return card
             else:
                 rfid_logger.info(f"Card found but too old ({time_diff:.1f}s), not returning")
@@ -437,8 +443,7 @@ class RFIDLockerSystem:
         self.send_to_server("new_transaction", transaction.to_dict())
         
         return True, f"Card assigned to locker {locker_id} with {selected_wash_type['name']} service"
-        
-        return True, f"Card assigned to locker {locker_id} with {wash_type} service"
+    
 
     def process_pickup(self, card_id):
         """Process clothes pickup"""
@@ -478,8 +483,10 @@ class RFIDLockerSystem:
         return False, "Transaction not found"
 
     def send_to_server(self, action, data):
-        """Send data to server"""
+        """Send data to server with enhanced error handling"""
         try:
+            logger.info(f"Sending {action} to server with data: {data}")
+            
             payload = {
                 "action": action,
                 "api_key": self.config["server_api_key"],
@@ -487,18 +494,38 @@ class RFIDLockerSystem:
                 "data": data
             }
             
+            # Log the full request details for debugging
+            logger.debug(f"Request URL: {self.config['server_url']}/{action}")
+            logger.debug(f"Request payload: {payload}")
+            
             response = requests.post(
                 f"{self.config['server_url']}/{action}",
                 json=payload,
                 timeout=5
             )
             
+            # Log the full response for debugging
+            logger.debug(f"Response status: {response.status_code}")
+            logger.debug(f"Response body: {response.text}")
+            
             if response.status_code == 200:
                 logger.info(f"Successfully sent {action} to server")
                 return True
             else:
                 logger.error(f"Server error: {response.status_code} - {response.text}")
+                # Try to parse error response if possible
+                try:
+                    error_data = response.json()
+                    logger.error(f"Error details: {error_data}")
+                except:
+                    pass
                 return False
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error to server: {e}")
+            return False
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Timeout connecting to server: {e}")
+            return False
         except Exception as e:
             logger.error(f"Error communicating with server: {e}")
             return False
@@ -548,13 +575,23 @@ class RFIDLockerSystem:
     def get_wash_types(self):
         """Get available wash types from server, fall back to local config if server unreachable"""
         try:
-            # Attempt to fetch wash types from server
-            response = requests.get(
+            # Attempt to fetch wash types from server with API key in POST request
+            payload = {
+                "api_key": self.config["server_api_key"],
+                "action": "get_wash_types"
+            }
+            
+            logger.info(f"Fetching wash types from server: {self.config['server_url']}/get_wash_types")
+            response = requests.post(
                 f"{self.config['server_url']}/get_wash_types",
+                json=payload,
                 timeout=5
             )
             
+            logger.debug(f"Wash types response: {response.status_code}")
+            
             if response.status_code == 200:
+                # Rest of function as before
                 wash_types = response.json().get("wash_types", [])
                 if wash_types:
                     logger.info(f"Successfully fetched {len(wash_types)} wash types from server")
@@ -576,6 +613,11 @@ class RFIDLockerSystem:
                     logger.warning("Server returned empty wash types list, using local config")
             else:
                 logger.warning(f"Server error when fetching wash types: {response.status_code}")
+                try:
+                    error_data = response.json()
+                    logger.warning(f"Error details: {error_data}")
+                except:
+                    logger.warning(f"Response text: {response.text}")
         except Exception as e:
             logger.error(f"Error fetching wash types from server: {e}")
         
@@ -650,14 +692,20 @@ def get_wash_types():
 
 @app.route('/api/read-card', methods=['GET'])
 def read_card():
-    """Get last read card"""
+    """Get last read card with enhanced error handling"""
     global locker_system
-    card = locker_system.get_last_card()
-    
-    if card:
-        return jsonify({"success": True, "card": card})
-    
-    return jsonify({"success": False, "message": "No card recently read"})
+    try:
+        card = locker_system.get_last_card()
+        
+        if card:
+            logger.info(f"Successfully read card: {card}")
+            return jsonify({"success": True, "card": card})
+        
+        logger.info("No card recently read")
+        return jsonify({"success": False, "message": "No card recently read"})
+    except Exception as e:
+        logger.error(f"Error reading card: {e}")
+        return jsonify({"success": False, "message": f"Error reading card: {str(e)}"})
 
 @app.route('/api/clear-card-queue', methods=['POST'])
 def clear_card_queue():
@@ -682,9 +730,30 @@ def drop_off():
     # Get first available locker
     locker_id = locker_system.data["available_lockers"][0]
     
-    # Get wash type ID from request
-    # If wash_type is an object, extract ID; if it's already an ID, use directly
-    wash_type_id = data["wash_type"]["id"] if isinstance(data["wash_type"], dict) else data["wash_type"]
+    # Get wash type - if it's a string, we need to look up the ID
+    wash_type_param = data["wash_type"]
+    wash_type_id = None
+    
+    # If wash_type is already a dict with ID
+    if isinstance(wash_type_param, dict) and "id" in wash_type_param:
+        wash_type_id = wash_type_param["id"]
+    # If wash_type is already an ID (numeric or UUID format)
+    elif isinstance(wash_type_param, (int, str)) and not ' ' in str(wash_type_param):
+        wash_type_id = wash_type_param
+    # If wash_type is a name string, we need to look up the ID
+    else:
+        # Get available wash types (assuming this is accessible)
+        wash_types = locker_system.get_wash_types()  # Implement this method
+        for wash_type in wash_types:
+            if wash_type["name"] == wash_type_param:
+                wash_type_id = wash_type["id"]
+                break
+        
+        if not wash_type_id:
+            logger.error(f"Wash type {wash_type_param} not found")
+            return jsonify({"success": False, "message": f"Invalid wash type: {wash_type_param}"})
+    
+    logger.info(f"Using wash type ID: {wash_type_id}")
     
     # Process assignment
     success, message = locker_system.assign_card_to_locker(
