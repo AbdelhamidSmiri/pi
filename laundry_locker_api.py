@@ -65,6 +65,8 @@ SERVER_URL = "https://api.2sdata.net/api"  # Replace with your server URL
 # Default configuration
 DEFAULT_CONFIG = {
     "system_name": "Laundry Locker System",
+    "device_name": "locker-pi-001",  # Add a unique device name
+    "device_location": "Main Building",  # Optional location information
     "server_url": SERVER_URL,
     "server_api_key": "7ea1d812-5308-4d61-bae6-be561caf1e98",  # Replace with your API key
     "relay_pins": {
@@ -86,7 +88,7 @@ DEFAULT_CONFIG = {
 
 class LockerTransaction:
     """Class to represent a locker transaction"""
-    def __init__(self, card_id, locker_id, wash_type=None, status="pending"):
+    def __init__(self, card_id, locker_id, wash_type=None, status="pending", device_info=None):
         self.transaction_id = str(uuid.uuid4())
         self.card_id = card_id
         self.locker_id = locker_id
@@ -94,6 +96,7 @@ class LockerTransaction:
         self.status = status  # pending, processing, completed
         self.drop_off_time = datetime.now().isoformat()
         self.pickup_time = None
+        self.device_info = device_info or {}  # Store device information
         
         # Add estimated completion time based on wash type if available
         if wash_type and 'estimated_time' in wash_type:
@@ -112,7 +115,8 @@ class LockerTransaction:
             "status": self.status,
             "drop_off_time": self.drop_off_time,
             "pickup_time": self.pickup_time,
-            "estimated_completion_time": self.estimated_completion_time
+            "estimated_completion_time": self.estimated_completion_time,
+            "device_info": self.device_info  # Include device info in output
         }
 
     def complete_transaction(self):
@@ -403,46 +407,63 @@ class RFIDLockerSystem:
 
     def assign_card_to_locker(self, card_id, locker_id, wash_type_id):
         """Assign a card to a locker with selected wash type"""
-        # Check if locker is available
-        if locker_id not in self.data["available_lockers"]:
-            logger.error(f"Locker {locker_id} is not available")
-            return False, "Locker not available"
+        try:
+            # Check if locker is available
+            if locker_id not in self.data["available_lockers"]:
+                logger.error(f"Locker {locker_id} is not available")
+                return False, "Locker not available"
 
-        # Get the full wash type information
-        wash_types = self.get_wash_types()
-        selected_wash_type = None
-        
-        for wt in wash_types:
-            if wt['id'] == wash_type_id:
-                selected_wash_type = wt
-                break
-        
-        if not selected_wash_type:
-            logger.error(f"Wash type {wash_type_id} not found")
-            return False, "Invalid wash type"
+            # Get the full wash type information
+            wash_types = self.get_wash_types()
+            selected_wash_type = None
+            
+            for wt in wash_types:
+                if wt['id'] == wash_type_id:
+                    selected_wash_type = wt
+                    break
+            
+            if not selected_wash_type:
+                logger.error(f"Wash type {wash_type_id} not found")
+                return False, "Invalid wash type"
+            
+            # Prepare device information
+            device_info = {
+                "device_name": self.config.get("device_name", "unknown-device"),
+                "device_location": self.config.get("device_location", "unknown-location"),
+                "system_name": self.config.get("system_name", "Laundry Locker System"),
+                "tag_id": card_id,  # Include the original RFID tag ID
+            }
 
-        # Create new transaction
-        transaction = LockerTransaction(card_id, locker_id, selected_wash_type)
-        
-        # Update active cards
-        self.data["active_cards"][card_id] = {
-            "locker_id": locker_id,
-            "transaction_id": transaction.transaction_id
-        }
-        
-        # Remove locker from available list
-        self.data["available_lockers"].remove(locker_id)
-        
-        # Add transaction to list
-        self.data["transactions"].append(transaction.to_dict())
-        
-        # Save changes
-        self.save_data()
-        
-        # Send update to server
-        self.send_to_server("new_transaction", transaction.to_dict())
-        
-        return True, f"Card assigned to locker {locker_id} with {selected_wash_type['name']} service"
+            # Create new transaction with device info
+            transaction = LockerTransaction(
+                card_id=card_id, 
+                locker_id=locker_id, 
+                wash_type=selected_wash_type,
+                device_info=device_info
+            )
+            
+            # Update active cards
+            self.data["active_cards"][card_id] = {
+                "locker_id": locker_id,
+                "transaction_id": transaction.transaction_id
+            }
+            
+            # Remove locker from available list
+            self.data["available_lockers"].remove(locker_id)
+            
+            # Add transaction to list
+            self.data["transactions"].append(transaction.to_dict())
+            
+            # Save changes
+            self.save_data()
+            
+            # Send update to server
+            self.send_to_server("new_transaction", transaction.to_dict())
+            
+            return True, f"Card assigned to locker {locker_id} with {selected_wash_type['name']} service"
+        except Exception as e:
+            logger.error(f"Error in assign_card_to_locker: {e}")
+            return False, f"System error: {str(e)}"
     
 
     def process_pickup(self, card_id):
@@ -461,6 +482,15 @@ class RFIDLockerSystem:
                 # Update transaction
                 self.data["transactions"][i]["status"] = "completed"
                 self.data["transactions"][i]["pickup_time"] = datetime.now().isoformat()
+                
+                # Add/update device info if not already present
+                if "device_info" not in self.data["transactions"][i]:
+                    self.data["transactions"][i]["device_info"] = {
+                        "device_name": self.config.get("device_name", "unknown-device"),
+                        "device_location": self.config.get("device_location", "unknown-location"),
+                        "system_name": self.config.get("system_name", "Laundry Locker System"),
+                        "tag_id": card_id,  # Include the original RFID tag ID
+                    }
                 
                 # Unlock locker
                 self.unlock_locker(locker_id)
@@ -483,7 +513,7 @@ class RFIDLockerSystem:
         return False, "Transaction not found"
 
     def send_to_server(self, action, data):
-        """Send data to server with enhanced error handling"""
+        """Send data to server with enhanced device information"""
         try:
             logger.info(f"Sending {action} to server with data: {data}")
             
@@ -494,6 +524,13 @@ class RFIDLockerSystem:
                 "data": data
             }
             
+            # Add device information to headers
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Device-Name': self.config.get("device_name", "unknown-device"),
+                'X-Device-Location': self.config.get("device_location", "unknown-location"),
+            }
+            
             # Log the full request details for debugging
             logger.debug(f"Request URL: {self.config['server_url']}/{action}")
             logger.debug(f"Request payload: {payload}")
@@ -501,6 +538,7 @@ class RFIDLockerSystem:
             response = requests.post(
                 f"{self.config['server_url']}/{action}",
                 json=payload,
+                headers=headers,
                 timeout=5
             )
             
@@ -660,6 +698,64 @@ CORS(app)  # Enable CORS for all routes
 
 # Initialize locker system
 locker_system = None
+
+@app.route('/api/device-info', methods=['GET'])
+def get_device_info():
+    """Get device information"""
+    global locker_system
+    
+    device_info = {
+        "device_name": locker_system.config.get("device_name", "unknown-device"),
+        "device_location": locker_system.config.get("device_location", "unknown-location"),
+        "system_name": locker_system.config.get("system_name", "Laundry Locker System"),
+        "api_version": "1.1.0",  # Add version information
+        "uptime": "unknown",  # You could add real uptime tracking if needed
+    }
+    
+    return jsonify(device_info)
+
+@app.route('/api/update-device-info', methods=['POST'])
+def update_device_info():
+    """Update device information"""
+    global locker_system
+    
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"success": False, "message": "Missing request data"})
+        
+        # Update device information
+        if "device_name" in data:
+            locker_system.config["device_name"] = data["device_name"]
+        
+        if "device_location" in data:
+            locker_system.config["device_location"] = data["device_location"]
+            
+        if "system_name" in data:
+            locker_system.config["system_name"] = data["system_name"]
+        
+        # Save the updated configuration
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(locker_system.config, f, indent=4)
+            logger.info("Device information updated and saved")
+        except Exception as e:
+            logger.error(f"Error saving configuration: {e}")
+            return jsonify({"success": False, "message": f"Error saving configuration: {str(e)}"})
+        
+        return jsonify({
+            "success": True, 
+            "message": "Device information updated successfully",
+            "device_info": {
+                "device_name": locker_system.config.get("device_name"),
+                "device_location": locker_system.config.get("device_location"),
+                "system_name": locker_system.config.get("system_name")
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error updating device info: {e}")
+        return jsonify({"success": False, "message": f"System error: {str(e)}"})
+
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
