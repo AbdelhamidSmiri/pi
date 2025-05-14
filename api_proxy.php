@@ -1,4 +1,5 @@
 <?php
+
 /**
  * API Proxy for Laundry Locker System with Enhanced RFID Handling
  * 
@@ -26,7 +27,8 @@ $timeout = 5; // Default timeout in seconds
 $max_retries = 2; // Number of retries for failed requests
 
 // Error logging
-function log_error($message) {
+function log_error($message)
+{
     error_log("[Laundry Locker API] " . $message);
 }
 
@@ -87,7 +89,19 @@ $endpoints = [
         'url' => '/reset-rfid-reader',
         'method' => 'POST',
         'timeout' => 15 // Longer timeout as RFID reset can take time
+    ],
+    'device-info' => [
+        'url' => '/device-info',
+        'method' => 'GET',
+        'timeout' => 2
+    ],
+    'update-device-info' => [
+        'url' => '/update-device-info',
+        'method' => 'POST',
+        'timeout' => 15
     ]
+
+
 ];
 
 // Check if endpoint exists
@@ -108,7 +122,7 @@ $retry_delay = isset($api_endpoint['retry_delay']) ? $api_endpoint['retry_delay'
 $request_body = null;
 if ($method === 'POST') {
     $request_body = file_get_contents('php://input');
-    
+
     // Validate JSON for POST requests
     if ($request_body) {
         $decoded = json_decode($request_body);
@@ -133,16 +147,16 @@ $status_code = 0;
 
 while ($attempt < $endpoint_retries && !$success) {
     $attempt++;
-    
+
     if ($attempt > 1) {
         // Add delay between retries (in microseconds)
         usleep($retry_delay * 1000);
         log_error("Retry attempt $attempt for request $request_id: $method $endpoint");
     }
-    
+
     // Initialize cURL
     $curl = curl_init();
-    
+
     // Set cURL options
     $options = [
         CURLOPT_URL => $url,
@@ -156,37 +170,37 @@ while ($attempt < $endpoint_retries && !$success) {
         CURLOPT_SSL_VERIFYPEER => false, // Disable SSL verification for local development
         CURLOPT_NOSIGNAL => 1 // Prevent SIGALRM issues during multi-threading on some systems
     ];
-    
+
     // Add request body for POST requests
     if ($method === 'POST' && $request_body) {
         $options[CURLOPT_POSTFIELDS] = $request_body;
         $options[CURLOPT_HTTPHEADER] = ['Content-Type: application/json'];
     }
-    
+
     curl_setopt_array($curl, $options);
-    
+
     // Execute the request with error handling
     $start_time = microtime(true);
     $response = curl_exec($curl);
     $end_time = microtime(true);
     $duration = round(($end_time - $start_time) * 1000); // Duration in milliseconds
-    
+
     $status_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
     $curl_errno = curl_errno($curl);
     $error = curl_error($curl);
-    
+
     curl_close($curl);
-    
+
     // Log response for debugging
     log_error("API Response $request_id: HTTP $status_code, took {$duration}ms" . ($error ? ", Error: $error" : ""));
-    
+
     // Check if the request was successful
     if (!$curl_errno && $status_code >= 200 && $status_code < 300) {
         $success = true;
     } else {
         // Store the last error
         $last_error = $error ?: "HTTP error $status_code";
-        
+
         // For RFID reader, some specific errors might indicate we should retry
         if ($endpoint === 'read-card' && ($curl_errno == CURLE_OPERATION_TIMEDOUT || $curl_errno == CURLE_COULDNT_CONNECT)) {
             log_error("Retryable error for RFID reader: $last_error");
@@ -207,7 +221,7 @@ while ($attempt < $endpoint_retries && !$success) {
 if (!$success) {
     // Provide more specific error messages for common connection issues
     $error_message = "API connection error after $attempt attempts";
-    
+
     if ($curl_errno == CURLE_OPERATION_TIMEDOUT) {
         $error_message = "API request timed out after {$endpoint_timeout} seconds";
     } elseif ($curl_errno == CURLE_COULDNT_CONNECT) {
@@ -215,10 +229,10 @@ if (!$success) {
     } elseif ($curl_errno == CURLE_COULDNT_RESOLVE_HOST) {
         $error_message = "Could not resolve API server hostname";
     }
-    
+
     http_response_code(503); // Service Unavailable
     echo json_encode([
-        'success' => false, 
+        'success' => false,
         'message' => $error_message,
         'error_code' => $curl_errno,
         'error_details' => $last_error
@@ -232,7 +246,7 @@ http_response_code($status_code);
 // Enhanced handling for read-card endpoint
 if ($endpoint === 'read-card') {
     $data = json_decode($response, true);
-    
+
     // This is just to improve the user experience for card reading
     if (isset($data['success'])) {
         if ($data['success'] === true && isset($data['card'])) {
@@ -253,7 +267,7 @@ if ($endpoint === 'read-card') {
 // Special handling for status checks
 if ($endpoint === 'status' || $endpoint === 'health') {
     $data = json_decode($response, true);
-    
+
     // Add API proxy metadata to help with debugging
     if (is_array($data)) {
         $data['proxy_info'] = [
@@ -261,7 +275,7 @@ if ($endpoint === 'status' || $endpoint === 'health') {
             'request_id' => $request_id,
             'response_time_ms' => $duration
         ];
-        
+
         echo json_encode($data);
         exit;
     }
