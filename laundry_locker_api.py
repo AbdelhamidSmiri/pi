@@ -426,21 +426,9 @@ class RFIDLockerSystem:
                 logger.error(f"Wash type {wash_type_id} not found")
                 return False, "Invalid wash type"
             
-            # Prepare device information
-            device_info = {
-                "device_name": self.config.get("device_name", "unknown-device"),
-                "device_location": self.config.get("device_location", "unknown-location"),
-                "system_name": self.config.get("system_name", "Laundry Locker System"),
-                "tag_id": card_id,  # Include the original RFID tag ID
-            }
 
             # Create new transaction with device info
-            transaction = LockerTransaction(
-                card_id=card_id, 
-                locker_id=locker_id, 
-                wash_type=selected_wash_type,
-                device_info=device_info
-            )
+            transaction = LockerTransaction(card_id, locker_id, selected_wash_type)
             
             # Update active cards
             self.data["active_cards"][card_id] = {
@@ -482,15 +470,10 @@ class RFIDLockerSystem:
                 # Update transaction
                 self.data["transactions"][i]["status"] = "completed"
                 self.data["transactions"][i]["pickup_time"] = datetime.now().isoformat()
-                
-                # Add/update device info if not already present
-                if "device_info" not in self.data["transactions"][i]:
-                    self.data["transactions"][i]["device_info"] = {
-                        "device_name": self.config.get("device_name", "unknown-device"),
-                        "device_location": self.config.get("device_location", "unknown-location"),
-                        "system_name": self.config.get("system_name", "Laundry Locker System"),
-                        "tag_id": card_id,  # Include the original RFID tag ID
-                    }
+                 # Format wash_type before sending
+                transaction_data = self.data["transactions"][i].copy()
+                if 'wash_type' in transaction_data and isinstance(transaction_data['wash_type'], dict):
+                    transaction_data['wash_type'] = transaction_data['wash_type'].get('name', 'Unknown')
                 
                 # Unlock locker
                 self.unlock_locker(locker_id)
@@ -513,31 +496,35 @@ class RFIDLockerSystem:
         return False, "Transaction not found"
 
     def send_to_server(self, action, data):
-        """Send data to server with enhanced device information"""
         try:
-            logger.info(f"Sending {action} to server with data: {data}")
+            # Make a copy of the data
+            payload_data = data.copy() if isinstance(data, dict) else data
             
+            # Format the wash_type properly
+            if isinstance(payload_data, dict) and 'wash_type' in payload_data:
+                if isinstance(payload_data['wash_type'], dict):
+                    payload_data['wash_type'] = payload_data['wash_type'].get('name', 'Unknown')
+            
+            # Build payload
             payload = {
                 "action": action,
                 "api_key": self.config["server_api_key"],
                 "timestamp": datetime.now().isoformat(),
-                "data": data
+                "data": payload_data
             }
             
-            # Add device information to headers
+            # Explicitly serialize to JSON to verify format
+            json_payload = json.dumps(payload)
+            logger.debug(f"JSON payload: {json_payload}")
+            
+            # Send using the serialized JSON
             headers = {
-                'Content-Type': 'application/json',
-                'X-Device-Name': self.config.get("device_name", "unknown-device"),
-                'X-Device-Location': self.config.get("device_location", "unknown-location"),
+                'Content-Type': 'application/json'
             }
-            
-            # Log the full request details for debugging
-            logger.debug(f"Request URL: {self.config['server_url']}/{action}")
-            logger.debug(f"Request payload: {payload}")
             
             response = requests.post(
                 f"{self.config['server_url']}/{action}",
-                json=payload,
+                data=json_payload,  # Use the serialized JSON string
                 headers=headers,
                 timeout=5
             )

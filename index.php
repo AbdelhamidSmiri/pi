@@ -592,7 +592,7 @@ $wash_types = callApi('/wash-types');
                         contentType: 'application/json',
                         data: JSON.stringify({
                             card_id: card.card_id,
-                            wash_type: selectedWashType.name
+                            wash_type: selectedWashType.id,
                         }),
                         success: function(result) {
                             if (result.success) {
