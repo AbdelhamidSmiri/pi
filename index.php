@@ -722,43 +722,85 @@ $wash_types = callApi('/wash-types');
                 if (isProcessing) return;
 
                 isProcessing = true;
-                let pickupSuccessful = false; // Add this flag
+                let pickupSuccessful = false;
 
-                // Start enhanced card polling for pickup
-                const cancelPolling = enhancedCardPolling('#pickupRfidStatus', '#pickupStatusMessage', function(card) {
-                    // Process pickup with the detected card
-                    $.ajax({
-                        url: 'api_proxy.php?endpoint=pick-up',
-                        type: 'POST',
-                        dataType: 'json',
-                        contentType: 'application/json',
-                        data: JSON.stringify({
-                            card_id: card.card_id
-                        }),
-                        success: function(result) {
-                            if (result.success) {
-                                pickupSuccessful = true; // Set the flag on success
-                                $('#pickupRfidStatus').html('');
-                                $('#pickupStatusMessage').html(`
-                        <div class="alert alert-success">
-                            Success! ${result.message}
-                        </div>
-                        <div>
-                            You may now retrieve your clothes.
-                        </div>
-                    `);
+                // Clear any previously read cards first
+                $.ajax({
+                    url: 'api_proxy.php?endpoint=clear-card-queue',
+                    type: 'POST',
+                    dataType: 'json',
+                    success: function() {
+                        console.log("Card queue cleared before starting new pickup");
 
-                                // Add a cooldown period of 10 seconds after successful pickup
-                                setTimeout(function() {
-                                    pickupSuccessful = false;
-                                }, 10000);
-                            } else {
-                                // Only show error message if we haven't just had a successful pickup
+                        // Now proceed with enhanced card polling
+                        startCardPollingForPickup();
+                    },
+                    error: function() {
+                        console.error("Failed to clear card queue");
+                        // Still try to proceed with card polling
+                        startCardPollingForPickup();
+                    }
+                });
+
+                function startCardPollingForPickup() {
+                    // Show initial message
+                    $('#pickupStatusMessage').html('<div class="card-reader-area">Please place your card on the reader</div>');
+                    $('#pickupRfidStatus').html('<div class="loading-spinner"></div> Waiting for RFID card...');
+
+                    // Start enhanced card polling for pickup
+                    const cancelPolling = enhancedCardPolling('#pickupRfidStatus', '#pickupStatusMessage', function(card) {
+                        // Process pickup with the detected card
+                        $.ajax({
+                            url: 'api_proxy.php?endpoint=pick-up',
+                            type: 'POST',
+                            dataType: 'json',
+                            contentType: 'application/json',
+                            data: JSON.stringify({
+                                card_id: card.card_id
+                            }),
+                            success: function(result) {
+                                if (result.success) {
+                                    pickupSuccessful = true;
+                                    $('#pickupRfidStatus').html('');
+                                    $('#pickupStatusMessage').html(`
+                            <div class="alert alert-success">
+                                Success! ${result.message}
+                            </div>
+                            <div>
+                                You may now retrieve your clothes.
+                            </div>
+                        `);
+
+                                    // Explicitly clear card queue after success
+                                    $.ajax({
+                                        url: 'api_proxy.php?endpoint=clear-card-queue',
+                                        type: 'POST',
+                                        dataType: 'json'
+                                    });
+                                } else {
+                                    if (!pickupSuccessful) {
+                                        $('#pickupRfidStatus').html('');
+                                        $('#pickupStatusMessage').html(`
+                                <div class="alert alert-danger">
+                                    Error: ${result.message}
+                                </div>
+                                <button class="btn btn-primary mt-3" id="retryPickupProcess">Try Again</button>
+                            `);
+
+                                        $('#retryPickupProcess').click(function() {
+                                            isProcessing = false;
+                                            $('#startPickUp').click();
+                                        });
+                                    }
+                                }
+                                isProcessing = false;
+                            },
+                            error: function() {
                                 if (!pickupSuccessful) {
                                     $('#pickupRfidStatus').html('');
                                     $('#pickupStatusMessage').html(`
                             <div class="alert alert-danger">
-                                Error: ${result.message}
+                                Error: Could not connect to system
                             </div>
                             <button class="btn btn-primary mt-3" id="retryPickupProcess">Try Again</button>
                         `);
@@ -767,43 +809,28 @@ $wash_types = callApi('/wash-types');
                                         isProcessing = false;
                                         $('#startPickUp').click();
                                     });
-                                } else {
-                                    // If we had a successful pickup and get an error right after,
-                                    // just clear the reading but keep the success message
-                                    console.log("Ignoring error response after successful pickup");
                                 }
+                                isProcessing = false;
                             }
-                            isProcessing = false;
-                        },
-                        error: function() {
-                            if (!pickupSuccessful) {
-                                $('#pickupRfidStatus').html('');
-                                $('#pickupStatusMessage').html(`
-                        <div class="alert alert-danger">
-                            Error: Could not connect to system
-                        </div>
-                        <button class="btn btn-primary mt-3" id="retryPickupProcess">Try Again</button>
-                    `);
-
-                                $('#retryPickupProcess').click(function() {
-                                    isProcessing = false;
-                                    $('#startPickUp').click();
-                                });
-                            }
-
-                            isProcessing = false;
-                        }
+                        });
                     });
-                });
 
-                // Add cancel button
-                $('#pickupRfidStatus').append('<button class="btn btn-sm btn-outline-secondary mt-2" id="cancelPickupCardScan">Cancel</button>');
-                $('#cancelPickupCardScan').click(function() {
-                    cancelPolling();
-                    $('#pickupRfidStatus').html('');
-                    $('#pickupStatusMessage').text('Card scanning cancelled. Click "Start Pick Up Process" to try again.');
-                    isProcessing = false;
-                });
+                    // Add cancel button
+                    $('#pickupRfidStatus').append('<button class="btn btn-sm btn-outline-secondary mt-2" id="cancelPickupCardScan">Cancel</button>');
+                    $('#cancelPickupCardScan').click(function() {
+                        cancelPolling();
+                        $('#pickupRfidStatus').html('');
+                        $('#pickupStatusMessage').text('Card scanning cancelled. Click "Start Pick Up Process" to try again.');
+
+                        // Also clear card queue when cancelling
+                        $.ajax({
+                            url: 'api_proxy.php?endpoint=clear-card-queue',
+                            type: 'POST'
+                        });
+
+                        isProcessing = false;
+                    });
+                }
             });
 
 
