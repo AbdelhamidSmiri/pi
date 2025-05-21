@@ -581,6 +581,7 @@ $wash_types = callApi('/wash-types');
                 }
 
                 isProcessing = true;
+                let dropoffSuccessful = false; // Add this flag
 
                 // Start enhanced card polling
                 const cancelPolling = enhancedCardPolling('#rfidStatus', '#statusMessage', function(card) {
@@ -596,47 +597,62 @@ $wash_types = callApi('/wash-types');
                         }),
                         success: function(result) {
                             if (result.success) {
+                                dropoffSuccessful = true; // Set the flag on success
                                 $('#rfidStatus').html('');
                                 $('#statusMessage').html(`
-                                    <div class="alert alert-success">
-                                        Success! ${result.message}
-                                    </div>
-                                    <div class="locker-result">
-                                        Locker #${result.locker_id}
-                                    </div>
-                                    <div>
-                                        Please place your clothes in the locker.
-                                    </div>
-                                `);
+                        <div class="alert alert-success">
+                            Success! ${result.message}
+                        </div>
+                        <div class="locker-result">
+                            Locker #${result.locker_id}
+                        </div>
+                        <div>
+                            Please place your clothes in the locker.
+                        </div>
+                    `);
+
+                                // Add a cooldown period of 10 seconds after successful drop-off
+                                setTimeout(function() {
+                                    dropoffSuccessful = false;
+                                }, 10000);
                             } else {
+                                // Only show error message if we haven't just had a successful drop-off
+                                if (!dropoffSuccessful) {
+                                    $('#rfidStatus').html('');
+                                    $('#statusMessage').html(`
+                            <div class="alert alert-danger">
+                                Error: ${result.message}
+                            </div>
+                            <button class="btn btn-primary mt-3" id="retryProcess">Try Again</button>
+                        `);
+
+                                    $('#retryProcess').click(function() {
+                                        isProcessing = false;
+                                        $('#startDropOff').click();
+                                    });
+                                } else {
+                                    // If we had a successful drop-off and get an error right after,
+                                    // just clear the reading but keep the success message
+                                    console.log("Ignoring error response after successful drop-off");
+                                }
+                            }
+                            isProcessing = false;
+                        },
+                        error: function() {
+                            if (!dropoffSuccessful) {
                                 $('#rfidStatus').html('');
                                 $('#statusMessage').html(`
-                                    <div class="alert alert-danger">
-                                        Error: ${result.message}
-                                    </div>
-                                    <button class="btn btn-primary mt-3" id="retryProcess">Try Again</button>
-                                `);
+                        <div class="alert alert-danger">
+                            Error: Could not connect to system
+                        </div>
+                        <button class="btn btn-primary mt-3" id="retryProcess">Try Again</button>
+                    `);
 
                                 $('#retryProcess').click(function() {
                                     isProcessing = false;
                                     $('#startDropOff').click();
                                 });
                             }
-                            isProcessing = false;
-                        },
-                        error: function() {
-                            $('#rfidStatus').html('');
-                            $('#statusMessage').html(`
-                                <div class="alert alert-danger">
-                                    Error: Could not connect to system
-                                </div>
-                                <button class="btn btn-primary mt-3" id="retryProcess">Try Again</button>
-                            `);
-
-                            $('#retryProcess').click(function() {
-                                isProcessing = false;
-                                $('#startDropOff').click();
-                            });
 
                             isProcessing = false;
                         }
@@ -742,7 +758,7 @@ $wash_types = callApi('/wash-types');
                 });
             });
 
-            
+
             // Refresh System Status (Admin)
             $('#refreshStatus').click(function() {
                 $('#refreshStatus').prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span> Refreshing...');
