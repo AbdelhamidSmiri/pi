@@ -658,6 +658,7 @@ $wash_types = callApi('/wash-types');
                 if (isProcessing) return;
 
                 isProcessing = true;
+                let pickupSuccessful = false; // Add this flag
 
                 // Start enhanced card polling for pickup
                 const cancelPolling = enhancedCardPolling('#pickupRfidStatus', '#pickupStatusMessage', function(card) {
@@ -672,44 +673,59 @@ $wash_types = callApi('/wash-types');
                         }),
                         success: function(result) {
                             if (result.success) {
+                                pickupSuccessful = true; // Set the flag on success
                                 $('#pickupRfidStatus').html('');
                                 $('#pickupStatusMessage').html(`
-                                    <div class="alert alert-success">
-                                        Success! ${result.message}
-                                    </div>
-                                    <div>
-                                        You may now retrieve your clothes.
-                                    </div>
-                                `);
+                        <div class="alert alert-success">
+                            Success! ${result.message}
+                        </div>
+                        <div>
+                            You may now retrieve your clothes.
+                        </div>
+                    `);
+
+                                // Add a cooldown period of 10 seconds after successful pickup
+                                setTimeout(function() {
+                                    pickupSuccessful = false;
+                                }, 10000);
                             } else {
+                                // Only show error message if we haven't just had a successful pickup
+                                if (!pickupSuccessful) {
+                                    $('#pickupRfidStatus').html('');
+                                    $('#pickupStatusMessage').html(`
+                            <div class="alert alert-danger">
+                                Error: ${result.message}
+                            </div>
+                            <button class="btn btn-primary mt-3" id="retryPickupProcess">Try Again</button>
+                        `);
+
+                                    $('#retryPickupProcess').click(function() {
+                                        isProcessing = false;
+                                        $('#startPickUp').click();
+                                    });
+                                } else {
+                                    // If we had a successful pickup and get an error right after,
+                                    // just clear the reading but keep the success message
+                                    console.log("Ignoring error response after successful pickup");
+                                }
+                            }
+                            isProcessing = false;
+                        },
+                        error: function() {
+                            if (!pickupSuccessful) {
                                 $('#pickupRfidStatus').html('');
                                 $('#pickupStatusMessage').html(`
-                                    <div class="alert alert-danger">
-                                        Error: ${result.message}
-                                    </div>
-                                    <button class="btn btn-primary mt-3" id="retryPickupProcess">Try Again</button>
-                                `);
+                        <div class="alert alert-danger">
+                            Error: Could not connect to system
+                        </div>
+                        <button class="btn btn-primary mt-3" id="retryPickupProcess">Try Again</button>
+                    `);
 
                                 $('#retryPickupProcess').click(function() {
                                     isProcessing = false;
                                     $('#startPickUp').click();
                                 });
                             }
-                            isProcessing = false;
-                        },
-                        error: function() {
-                            $('#pickupRfidStatus').html('');
-                            $('#pickupStatusMessage').html(`
-                                <div class="alert alert-danger">
-                                    Error: Could not connect to system
-                                </div>
-                                <button class="btn btn-primary mt-3" id="retryPickupProcess">Try Again</button>
-                            `);
-
-                            $('#retryPickupProcess').click(function() {
-                                isProcessing = false;
-                                $('#startPickUp').click();
-                            });
 
                             isProcessing = false;
                         }
@@ -726,6 +742,7 @@ $wash_types = callApi('/wash-types');
                 });
             });
 
+            
             // Refresh System Status (Admin)
             $('#refreshStatus').click(function() {
                 $('#refreshStatus').prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span> Refreshing...');
