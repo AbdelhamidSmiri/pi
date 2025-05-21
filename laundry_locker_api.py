@@ -408,11 +408,15 @@ class RFIDLockerSystem:
     def assign_card_to_locker(self, card_id, locker_id, wash_type_id):
         """Assign a card to a locker with selected wash type"""
         try:
+            # Normalize card_id to string format
+            card_id = str(card_id)
+            
             # Check if card already has an active assignment
             if card_id in self.data["active_cards"]:
-                logger.error(f"Card {card_id} already has an active assignment")
                 existing_locker = self.data["active_cards"][card_id]["locker_id"]
+                logger.error(f"Card {card_id} already has an active assignment to locker {existing_locker}")
                 return False, f"Card already assigned to locker {existing_locker}"
+            
                 
             # Check if locker is available
             if locker_id not in self.data["available_lockers"]:
@@ -901,18 +905,20 @@ def drop_off():
     if not data or "card_id" not in data or "wash_type" not in data:
         return jsonify({"success": False, "message": "Missing required fields"})
     
-    # Check if card is already active - THIS IS THE NEW CHECK
-    card_id = data["card_id"]
+    # Check if card already has an active assignment
+    card_id = str(data["card_id"])
     if card_id in locker_system.data["active_cards"]:
         existing_locker = locker_system.data["active_cards"][card_id]["locker_id"]
+        logger.warning(f"Card {card_id} already has an active assignment to locker {existing_locker}")
         return jsonify({
             "success": False, 
-            "message": f"Card already has an active transaction for locker {existing_locker}"
+            "message": f"This card is already assigned to locker {existing_locker}. Please use pickup process to retrieve your clothes."
         })
     
     # Check if lockers are available
     if not locker_system.data["available_lockers"]:
         return jsonify({"success": False, "message": "No lockers available"})
+    
     
     # Get first available locker
     locker_id = locker_system.data["available_lockers"][0]
