@@ -434,10 +434,18 @@ $wash_types = callApi('/wash-types');
                 let attempts = 0;
                 const maxAttempts = 30; // Try for 30 seconds (30 attempts at 1-second intervals)
                 let pollingInterval;
+                let pollingStartTime = Date.now(); // Add this to track when polling started
 
                 // Reset status elements
                 $(statusElement).html('<div class="loading-spinner"></div> Please scan your RFID card...');
                 $(messageElement).html('<div class="card-reader-area">Please place your card on the reader</div>');
+
+                // First clear card queue to ensure we only get fresh reads
+                $.ajax({
+                    url: 'api_proxy.php?endpoint=clear-card-queue',
+                    type: 'POST',
+                    async: false // Make this synchronous to ensure it completes before we start polling
+                });
 
                 // Create a progress bar for visual feedback
                 const progressBar = $('<div class="progress"><div class="progress-bar" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div></div>');
@@ -459,21 +467,28 @@ $wash_types = callApi('/wash-types');
                         timeout: 3000, // 3 second timeout
                         success: function(response) {
                             if (response.success && response.card) {
-                                // Card detected
-                                clearInterval(pollingInterval);
-                                progressBar.remove();
+                                // Check if this card was read after polling started
+                                let cardTimestamp = new Date(response.card.timestamp).getTime();
 
-                                $(statusElement).html('<div class="loading-spinner"></div> Card detected, processing...');
-                                $(messageElement).html('<div class="alert alert-info">Card detected! Processing your request...</div>');
+                                if (cardTimestamp > pollingStartTime) {
+                                    // Card detected after polling started - valid read
+                                    clearInterval(pollingInterval);
+                                    progressBar.remove();
 
-                                // Call the callback function with the card data
-                                onCardDetected(response.card);
+                                    $(statusElement).html('<div class="loading-spinner"></div> Card detected, processing...');
+                                    $(messageElement).html('<div class="alert alert-info">Card detected! Processing your request...</div>');
 
-                                // Clear card queue to prevent duplicate reads
-                                $.ajax({
-                                    url: 'api_proxy.php?endpoint=clear-card-queue',
-                                    type: 'POST'
-                                });
+                                    // Call the callback function with the card data
+                                    onCardDetected(response.card);
+
+                                    // Clear card queue to prevent duplicate reads
+                                    $.ajax({
+                                        url: 'api_proxy.php?endpoint=clear-card-queue',
+                                        type: 'POST'
+                                    });
+                                } else {
+                                    console.log("Ignoring card read from before polling started");
+                                }
                             } else if (attempts >= maxAttempts) {
                                 // No card detected after maximum attempts
                                 clearInterval(pollingInterval);
@@ -481,11 +496,11 @@ $wash_types = callApi('/wash-types');
 
                                 $(statusElement).html('');
                                 $(messageElement).html(`
-                                    <div class="alert alert-warning">
-                                        No card detected after ${maxAttempts} seconds. 
-                                        <button class="btn btn-primary btn-sm ms-2" id="retryCardScan">Try Again</button>
-                                    </div>
-                                `);
+                        <div class="alert alert-warning">
+                            No card detected after ${maxAttempts} seconds. 
+                            <button class="btn btn-primary btn-sm ms-2" id="retryCardScan">Try Again</button>
+                        </div>
+                    `);
 
                                 // Set up retry button
                                 $('#retryCardScan').click(function() {
@@ -499,10 +514,10 @@ $wash_types = callApi('/wash-types');
                                 // Log the error but continue trying
                                 console.error(`Card polling error (attempt ${attempts}): ${error}`);
                                 $(messageElement).html(`
-                                    <div class="alert alert-warning">
-                                        Connection issue, retrying... (${maxAttempts - attempts} attempts left)
-                                    </div>
-                                `);
+                        <div class="alert alert-warning">
+                            Connection issue, retrying... (${maxAttempts - attempts} attempts left)
+                        </div>
+                    `);
                             } else {
                                 // Stop after max attempts
                                 clearInterval(pollingInterval);
@@ -510,11 +525,11 @@ $wash_types = callApi('/wash-types');
 
                                 $(statusElement).html('');
                                 $(messageElement).html(`
-                                    <div class="alert alert-danger">
-                                        Error connecting to system. 
-                                        <button class="btn btn-primary btn-sm ms-2" id="retryCardScan">Try Again</button>
-                                    </div>
-                                `);
+                        <div class="alert alert-danger">
+                            Error connecting to system. 
+                            <button class="btn btn-primary btn-sm ms-2" id="retryCardScan">Try Again</button>
+                        </div>
+                    `);
 
                                 // Set up retry button
                                 $('#retryCardScan').click(function() {
@@ -530,6 +545,12 @@ $wash_types = callApi('/wash-types');
                     if (pollingInterval) {
                         clearInterval(pollingInterval);
                         progressBar.remove();
+
+                        // Clear card queue on cancel
+                        $.ajax({
+                            url: 'api_proxy.php?endpoint=clear-card-queue',
+                            type: 'POST'
+                        });
                     }
                 };
             }
@@ -581,47 +602,89 @@ $wash_types = callApi('/wash-types');
                 }
 
                 isProcessing = true;
-                let dropoffSuccessful = false; // Add this flag
+                let dropoffSuccessful = false;
 
-                // Start enhanced card polling
-                const cancelPolling = enhancedCardPolling('#rfidStatus', '#statusMessage', function(card) {
-                    // Process drop off with the detected card
-                    $.ajax({
-                        url: 'api_proxy.php?endpoint=drop-off',
-                        type: 'POST',
-                        dataType: 'json',
-                        contentType: 'application/json',
-                        data: JSON.stringify({
-                            card_id: card.card_id,
-                            wash_type: selectedWashType.id,
-                        }),
-                        success: function(result) {
-                            if (result.success) {
-                                dropoffSuccessful = true; // Set the flag on success
-                                $('#rfidStatus').html('');
-                                $('#statusMessage').html(`
-                        <div class="alert alert-success">
-                            Success! ${result.message}
-                        </div>
-                        <div class="locker-result">
-                            Locker #${result.locker_id}
-                        </div>
-                        <div>
-                            Please place your clothes in the locker.
-                        </div>
-                    `);
+                // Clear any previously read cards first
+                $.ajax({
+                    url: 'api_proxy.php?endpoint=clear-card-queue',
+                    type: 'POST',
+                    dataType: 'json',
+                    success: function() {
+                        console.log("Card queue cleared before starting new drop-off");
 
-                                // Add a cooldown period of 10 seconds after successful drop-off
-                                setTimeout(function() {
-                                    dropoffSuccessful = false;
-                                }, 10000);
-                            } else {
-                                // Only show error message if we haven't just had a successful drop-off
+                        // Now proceed with enhanced card polling
+                        startCardPollingForDropOff();
+                    },
+                    error: function() {
+                        console.error("Failed to clear card queue");
+                        // Still try to proceed with card polling
+                        startCardPollingForDropOff();
+                    }
+                });
+
+                function startCardPollingForDropOff() {
+                    // Show initial message
+                    $('#statusMessage').html('<div class="card-reader-area">Please place your card on the reader</div>');
+                    $('#rfidStatus').html('<div class="loading-spinner"></div> Waiting for RFID card...');
+
+                    // Start enhanced card polling
+                    const cancelPolling = enhancedCardPolling('#rfidStatus', '#statusMessage', function(card) {
+                        // Process drop off with the detected card
+                        $.ajax({
+                            url: 'api_proxy.php?endpoint=drop-off',
+                            type: 'POST',
+                            dataType: 'json',
+                            contentType: 'application/json',
+                            data: JSON.stringify({
+                                card_id: card.card_id,
+                                wash_type: selectedWashType.id,
+                            }),
+                            success: function(result) {
+                                if (result.success) {
+                                    dropoffSuccessful = true;
+                                    $('#rfidStatus').html('');
+                                    $('#statusMessage').html(`
+                            <div class="alert alert-success">
+                                Success! ${result.message}
+                            </div>
+                            <div class="locker-result">
+                                Locker #${result.locker_id}
+                            </div>
+                            <div>
+                                Please place your clothes in the locker.
+                            </div>
+                        `);
+
+                                    // Explicitly clear card queue after success
+                                    $.ajax({
+                                        url: 'api_proxy.php?endpoint=clear-card-queue',
+                                        type: 'POST',
+                                        dataType: 'json'
+                                    });
+                                } else {
+                                    if (!dropoffSuccessful) {
+                                        $('#rfidStatus').html('');
+                                        $('#statusMessage').html(`
+                                <div class="alert alert-danger">
+                                    Error: ${result.message}
+                                </div>
+                                <button class="btn btn-primary mt-3" id="retryProcess">Try Again</button>
+                            `);
+
+                                        $('#retryProcess').click(function() {
+                                            isProcessing = false;
+                                            $('#startDropOff').click();
+                                        });
+                                    }
+                                }
+                                isProcessing = false;
+                            },
+                            error: function() {
                                 if (!dropoffSuccessful) {
                                     $('#rfidStatus').html('');
                                     $('#statusMessage').html(`
                             <div class="alert alert-danger">
-                                Error: ${result.message}
+                                Error: Could not connect to system
                             </div>
                             <button class="btn btn-primary mt-3" id="retryProcess">Try Again</button>
                         `);
@@ -630,43 +693,28 @@ $wash_types = callApi('/wash-types');
                                         isProcessing = false;
                                         $('#startDropOff').click();
                                     });
-                                } else {
-                                    // If we had a successful drop-off and get an error right after,
-                                    // just clear the reading but keep the success message
-                                    console.log("Ignoring error response after successful drop-off");
                                 }
+                                isProcessing = false;
                             }
-                            isProcessing = false;
-                        },
-                        error: function() {
-                            if (!dropoffSuccessful) {
-                                $('#rfidStatus').html('');
-                                $('#statusMessage').html(`
-                        <div class="alert alert-danger">
-                            Error: Could not connect to system
-                        </div>
-                        <button class="btn btn-primary mt-3" id="retryProcess">Try Again</button>
-                    `);
-
-                                $('#retryProcess').click(function() {
-                                    isProcessing = false;
-                                    $('#startDropOff').click();
-                                });
-                            }
-
-                            isProcessing = false;
-                        }
+                        });
                     });
-                });
 
-                // Add cancel button
-                $('#rfidStatus').append('<button class="btn btn-sm btn-outline-secondary mt-2" id="cancelCardScan">Cancel</button>');
-                $('#cancelCardScan').click(function() {
-                    cancelPolling();
-                    $('#rfidStatus').html('');
-                    $('#statusMessage').text('Card scanning cancelled. Select a wash type and try again.');
-                    isProcessing = false;
-                });
+                    // Add cancel button
+                    $('#rfidStatus').append('<button class="btn btn-sm btn-outline-secondary mt-2" id="cancelCardScan">Cancel</button>');
+                    $('#cancelCardScan').click(function() {
+                        cancelPolling();
+                        $('#rfidStatus').html('');
+                        $('#statusMessage').text('Card scanning cancelled. Select a wash type and try again.');
+
+                        // Also clear card queue when cancelling
+                        $.ajax({
+                            url: 'api_proxy.php?endpoint=clear-card-queue',
+                            type: 'POST'
+                        });
+
+                        isProcessing = false;
+                    });
+                }
             });
 
             // Start Pick Up Process
