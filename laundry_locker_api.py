@@ -462,13 +462,34 @@ class RFIDLockerSystem:
     
     def process_pickup(self, card_id):
         """Process clothes pickup"""
-        if card_id not in self.data["active_cards"]:
-            return False, "Card not associated with any locker"
+        # Normalize card_id to string format to ensure consistent comparison
+        card_id_str = str(card_id)
+        
+        # Add debug logging to help diagnose
+        logger.info(f"Processing pickup for card ID: {card_id_str}")
+        logger.info(f"Active cards in system: {list(self.data['active_cards'].keys())}")
+        
+        # Check if card exists in active cards, using string comparison
+        if card_id_str not in self.data["active_cards"]:
+            # Try to find by doing a case-insensitive comparison
+            found = False
+            for active_card_id in self.data["active_cards"].keys():
+                if str(active_card_id).lower() == card_id_str.lower():
+                    card_id_str = active_card_id  # Use the version from the database
+                    found = True
+                    logger.info(f"Found card with case-insensitive match: {active_card_id}")
+                    break
+            
+            if not found:
+                logger.error(f"Card {card_id_str} not found in active cards")
+                return False, "Card not associated with any locker"
         
         # Get locker details
-        locker_info = self.data["active_cards"][card_id]
+        locker_info = self.data["active_cards"][card_id_str]
         locker_id = locker_info["locker_id"]
         transaction_id = locker_info["transaction_id"]
+        
+        logger.info(f"Found active transaction: locker {locker_id}, transaction {transaction_id}")
         
         # Find transaction
         for i, trans in enumerate(self.data["transactions"]):
@@ -476,7 +497,8 @@ class RFIDLockerSystem:
                 # Update transaction
                 self.data["transactions"][i]["status"] = "completed"
                 self.data["transactions"][i]["pickup_time"] = datetime.now().isoformat()
-                 # Format wash_type before sending
+                
+                # Format wash_type before sending
                 transaction_data = self.data["transactions"][i].copy()
                 if 'wash_type' in transaction_data and isinstance(transaction_data['wash_type'], dict):
                     transaction_data['wash_type'] = transaction_data['wash_type'].get('name', 'Unknown')
@@ -485,11 +507,12 @@ class RFIDLockerSystem:
                 self.unlock_locker(locker_id)
                 
                 # Remove card from active cards
-                del self.data["active_cards"][card_id]
+                del self.data["active_cards"][card_id_str]
                 
                 # Add locker back to available list
-                if locker_id not in self.data["available_lockers"]:
-                    self.data["available_lockers"].append(locker_id)
+                locker_id_str = str(locker_id)  # Ensure locker_id is string
+                if locker_id_str not in self.data["available_lockers"]:
+                    self.data["available_lockers"].append(locker_id_str)
                 
                 # Save changes
                 self.save_data()
@@ -880,7 +903,12 @@ def pick_up():
     if not data or "card_id" not in data:
         return jsonify({"success": False, "message": "Missing card_id"})
     
-    success, message = locker_system.process_pickup(data["card_id"])
+    # Make sure card_id is a string
+    card_id = str(data["card_id"])
+    
+    logger.info(f"Pickup request for card: {card_id}")
+    
+    success, message = locker_system.process_pickup(card_id)
     
     return jsonify({
         "success": success,
