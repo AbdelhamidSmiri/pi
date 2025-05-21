@@ -408,6 +408,12 @@ class RFIDLockerSystem:
     def assign_card_to_locker(self, card_id, locker_id, wash_type_id):
         """Assign a card to a locker with selected wash type"""
         try:
+            # Check if card already has an active assignment
+            if card_id in self.data["active_cards"]:
+                logger.error(f"Card {card_id} already has an active assignment")
+                existing_locker = self.data["active_cards"][card_id]["locker_id"]
+                return False, f"Card already assigned to locker {existing_locker}"
+                
             # Check if locker is available
             if locker_id not in self.data["available_lockers"]:
                 logger.error(f"Locker {locker_id} is not available")
@@ -426,7 +432,6 @@ class RFIDLockerSystem:
                 logger.error(f"Wash type {wash_type_id} not found")
                 return False, "Invalid wash type"
             
-
             # Create new transaction with device info
             transaction = LockerTransaction(card_id, locker_id, selected_wash_type)
             
@@ -436,8 +441,10 @@ class RFIDLockerSystem:
                 "transaction_id": transaction.transaction_id
             }
             
-            # Remove locker from available list
-            self.data["available_lockers"].remove(locker_id)
+            # Remove locker from available list - make sure we convert to string if it's not already
+            locker_id_str = str(locker_id)
+            if locker_id_str in self.data["available_lockers"]:
+                self.data["available_lockers"].remove(locker_id_str)
             
             # Add transaction to list
             self.data["transactions"].append(transaction.to_dict())
@@ -453,7 +460,6 @@ class RFIDLockerSystem:
             logger.error(f"Error in assign_card_to_locker: {e}")
             return False, f"System error: {str(e)}"
     
-
     def process_pickup(self, card_id):
         """Process clothes pickup"""
         if card_id not in self.data["active_cards"]:
@@ -805,6 +811,15 @@ def drop_off():
     data = request.json
     if not data or "card_id" not in data or "wash_type" not in data:
         return jsonify({"success": False, "message": "Missing required fields"})
+    
+    # Check if card is already active - THIS IS THE NEW CHECK
+    card_id = data["card_id"]
+    if card_id in locker_system.data["active_cards"]:
+        existing_locker = locker_system.data["active_cards"][card_id]["locker_id"]
+        return jsonify({
+            "success": False, 
+            "message": f"Card already has an active transaction for locker {existing_locker}"
+        })
     
     # Check if lockers are available
     if not locker_system.data["available_lockers"]:
