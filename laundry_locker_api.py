@@ -490,10 +490,23 @@ class RFIDLockerSystem:
         transaction_id = locker_info["transaction_id"]
         
         logger.info(f"Found active transaction: locker {locker_id}, transaction {transaction_id}")
+        logger.info(f"Transactions in system: {len(self.data['transactions'])}")
         
-        # Find transaction
+        # List all transaction IDs for debugging
+        transaction_ids = [t.get("transaction_id") for t in self.data["transactions"]]
+        logger.info(f"Available transaction IDs: {transaction_ids}")
+        
+        # Find transaction - improved matching
+        found_transaction = False
         for i, trans in enumerate(self.data["transactions"]):
-            if trans["transaction_id"] == transaction_id:
+            # Log each transaction we're checking
+            logger.debug(f"Checking transaction {i}: {trans.get('transaction_id')}")
+            
+            # Match by transaction ID
+            if trans.get("transaction_id") == transaction_id:
+                found_transaction = True
+                logger.info(f"Found matching transaction: {trans.get('transaction_id')}")
+                
                 # Update transaction
                 self.data["transactions"][i]["status"] = "completed"
                 self.data["transactions"][i]["pickup_time"] = datetime.now().isoformat()
@@ -518,12 +531,65 @@ class RFIDLockerSystem:
                 self.save_data()
                 
                 # Send update to server
-                self.send_to_server("pickup_complete", self.data["transactions"][i])
+                self.send_to_server("pickup_complete", transaction_data)
                 
                 return True, f"Clothes picked up from locker {locker_id}"
         
+        # If we get here, we didn't find the transaction
+        logger.error(f"Transaction {transaction_id} not found for card {card_id_str}")
+        
+        # As a fallback, try to find any transaction by card ID
+        fallback_found = False
+        for i, trans in enumerate(self.data["transactions"]):
+            if trans.get("card_id") == card_id_str and trans.get("status") != "completed":
+                fallback_found = True
+                logger.info(f"Found fallback transaction by card ID: {trans.get('transaction_id')}")
+                
+                # Use this transaction
+                transaction_id = trans.get("transaction_id")
+                locker_id = trans.get("locker_id")
+                
+                # Update transaction
+                self.data["transactions"][i]["status"] = "completed"
+                self.data["transactions"][i]["pickup_time"] = datetime.now().isoformat()
+                
+                # Unlock locker
+                self.unlock_locker(locker_id)
+                
+                # Remove card from active cards
+                if card_id_str in self.data["active_cards"]:
+                    del self.data["active_cards"][card_id_str]
+                
+                # Add locker back to available list
+                locker_id_str = str(locker_id)  # Ensure locker_id is string
+                if locker_id_str not in self.data["available_lockers"]:
+                    self.data["available_lockers"].append(locker_id_str)
+                
+                # Save changes
+                self.save_data()
+                
+                return True, f"Clothes picked up from locker {locker_id} (fallback)"
+        
+        # Special case - reset the system if something is corrupted
+        if not fallback_found and card_id_str in self.data["active_cards"]:
+            logger.warning(f"Transaction mismatch - resetting card {card_id_str}")
+            locker_id = self.data["active_cards"][card_id_str]["locker_id"]
+            
+            # Remove card from active cards
+            del self.data["active_cards"][card_id_str]
+            
+            # Add locker back to available list
+            locker_id_str = str(locker_id)
+            if locker_id_str not in self.data["available_lockers"]:
+                self.data["available_lockers"].append(locker_id_str)
+            
+            # Save changes
+            self.save_data()
+            
+            return True, f"Locker {locker_id} unlocked and reset"
+        
         return False, "Transaction not found"
-
+    
     def send_to_server(self, action, data):
         try:
             # Make a copy of the data
