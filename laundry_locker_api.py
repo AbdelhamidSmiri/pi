@@ -409,13 +409,12 @@ class RFIDLockerSystem:
         """Assign a card to a locker with selected wash type"""
         try:
             # Normalize card_id to string format
-            card_id = str(card_id)
+            card_id = str(card_id).strip()
             
-            # Check if card already has an active assignment
-            if card_id in self.data["active_cards"]:
-                existing_locker = self.data["active_cards"][card_id]["locker_id"]
-                logger.error(f"Card {card_id} already has an active assignment to locker {existing_locker}")
-                return False, f"Card already assigned to locker {existing_locker}"
+            # Double-check card isn't already assigned
+            if self.check_card_already_assigned(card_id):
+                logger.error(f"Card {card_id} already has an active assignment")
+                return False, f"Card already assigned to another locker"
             
                 
             # Check if locker is available
@@ -463,6 +462,31 @@ class RFIDLockerSystem:
         except Exception as e:
             logger.error(f"Error in assign_card_to_locker: {e}")
             return False, f"System error: {str(e)}"
+        
+    def check_card_already_assigned(self, card_id):
+        """Check if a card is already assigned to a locker"""
+        # Normalize card ID to string
+        card_id_str = str(card_id).strip()
+        
+        # Direct lookup
+        if card_id_str in self.data["active_cards"]:
+            return True
+        
+        # Case-insensitive lookup - normalize both for comparison
+        card_id_lower = card_id_str.lower()
+        for active_card in self.data["active_cards"].keys():
+            if str(active_card).lower() == card_id_lower:
+                return True
+        
+        # Also check the transactions to be safe
+        for transaction in self.data["transactions"]:
+            if transaction.get("status") != "completed":
+                trans_card_id = str(transaction.get("card_id", "")).strip().lower()
+                if trans_card_id == card_id_lower:
+                    return True
+        
+        # Not found in any active assignments
+        return False
     
     def process_pickup(self, card_id):
         """Process clothes pickup"""
@@ -905,14 +929,23 @@ def drop_off():
     if not data or "card_id" not in data or "wash_type" not in data:
         return jsonify({"success": False, "message": "Missing required fields"})
     
+    # Get and normalize card ID
+    card_id = str(data["card_id"]).strip()
+    logger.info(f"Drop-off request for card: {card_id}")
+    
     # Check if card already has an active assignment
-    card_id = str(data["card_id"])
-    if card_id in locker_system.data["active_cards"]:
-        existing_locker = locker_system.data["active_cards"][card_id]["locker_id"]
-        logger.warning(f"Card {card_id} already has an active assignment to locker {existing_locker}")
+    if locker_system.check_card_already_assigned(card_id):
+        logger.warning(f"Card {card_id} already has an active assignment")
+        # Get the assigned locker if possible
+        locker_id = "unknown"
+        for active_card, info in locker_system.data["active_cards"].items():
+            if str(active_card).lower() == card_id.lower():
+                locker_id = info.get("locker_id", "unknown")
+                break
+        
         return jsonify({
             "success": False, 
-            "message": f"This card is already assigned to locker {existing_locker}. Please use pickup process to retrieve your clothes."
+            "message": f"This card already has clothes in locker {locker_id}. Please use the pickup process first."
         })
     
     # Check if lockers are available
